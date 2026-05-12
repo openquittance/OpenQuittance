@@ -1,0 +1,21 @@
+node_modules
+.next
+out
+.env
+.env.local
+.env.*.local
+.DS_Store
+uploads
+*.log
+tsconfig.tsbuildinfo
+coverage
+# v3.0 — exclusion publication open source.
+# SESSION-LOGS contient PII user (coordonnées, refs internes) + traces
+# de clés rotatées en clair dans son historique. À conserver localement
+# pour archive privée, exclu du repo public OpenQuittance.
+docs/SESSION-LOGS.md
+
+# v3.7.1 — exclusions publication public
+.env.bak.*
+*.zip
+.netrc

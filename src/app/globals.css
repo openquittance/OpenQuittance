@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 20% 98%;
+    --foreground: 224 71% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 71% 4%;
+    --primary: 213 56% 23%;
+    --primary-foreground: 0 0% 100%;
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 220 14% 96%;
+    --accent-foreground: 224 71% 4%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 213 56% 23%;
+    --radius: 0.625rem;
+  }
+
+  .dark {
+    --background: 222 47% 8%;
+    --foreground: 210 20% 96%;
+    --card: 222 47% 11%;
+    --card-foreground: 210 20% 96%;
+    --primary: 213 70% 70%;
+    --primary-foreground: 222 47% 8%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 16% 65%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 20% 96%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 217 33% 22%;
+    --input: 217 33% 22%;
+    --ring: 213 70% 70%;
+  }
+
+  * { box-sizing: border-box; border-color: hsl(var(--border)); }
+  html, body { padding: 0; margin: 0; height: 100%; }
+  /* v3.6.2 — overflow-x: hidden au niveau html+body bloque le scroll
+     horizontal accidentel (cause user iPhone : tables w-full forçaient
+     viewport > 100vw → dashboard décalé droite, titres coupés gauche).
+     Les conteneurs qui scrollent volontairement (`.table-wrap`,
+     `overflow-x-auto`) continuent de fonctionner — ils sont
+     auto-contained. */
+  html, body { overflow-x: hidden; max-width: 100vw; }
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-primary text-primary-foreground hover:opacity-90;
+  }
+  .btn-secondary {
+    @apply btn bg-card border border-border text-foreground hover:bg-accent;
+  }
+  .btn-ghost {
+    @apply btn text-foreground hover:bg-accent;
+  }
+  .btn-danger {
+    @apply btn bg-destructive text-destructive-foreground hover:opacity-90;
+  }
+  .input {
+    @apply w-full rounded-md border border-input bg-card px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring/30 focus:border-ring;
+  }
+  .label {
+    @apply block text-xs font-medium text-muted-foreground mb-1;
+  }
+  .card {
+    @apply rounded-xl border border-border bg-card p-5 shadow-sm;
+  }
+  .table-base { @apply w-full text-sm; }
+  /* v3.6.0 mobile : wrap les tables dans un .table-wrap pour scroll
+     horizontal sur petit écran sans casser le layout. */
+  .table-wrap { @apply -mx-4 sm:mx-0 overflow-x-auto sm:rounded-xl sm:border sm:border-border; }
+  .table-wrap > .table-base { @apply min-w-[600px]; }
+  .table-base th {
+    @apply text-left text-xs uppercase tracking-wide text-muted-foreground font-medium px-3 py-2 border-b border-border bg-muted/40;
+  }
+  .table-base td {
+    @apply px-3 py-3 border-b border-border/60;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-ok { @apply badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300; }
+  .badge-warn { @apply badge bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300; }
+  .badge-off { @apply badge bg-muted text-muted-foreground; }
+}

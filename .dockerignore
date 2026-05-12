@@ -1,0 +1,16 @@
+node_modules
+.next
+.env
+.env.local
+.git
+.DS_Store
+uploads
+*.log
+# Hotfix v2.7.0-rc4 : ignorer un éventuel dossier nested `quittances-app/`
+# au root du context de build. Provient d'un ancien push NAS où le zip
+# avait été extrait avec la structure `quittances-app/<files>` au lieu de
+# `<files>` à la racine, créant `/volume1/docker/quittances-app/quittances-app/`.
+# Sans cet exclude, Next type-check les 2 copies du code et fail sur
+# l'ancienne version stale.
+quittances-app/
+*.zip

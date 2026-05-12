@@ -1,0 +1,534 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Modèle simplifié: un seul espace de travail partagé.
+// Plusieurs utilisateurs collaborent sur les mêmes données (bailleurs/biens/etc.)
+// avec des rôles différents.
+
+enum AppRole {
+  ADMIN     // tout pouvoir + config app + gestion users
+  MEMBER    // CRUD sur les données métier
+  VIEWER    // lecture seule
+  TENANT    // locataire — accès limité à /portail/* uniquement (cf. docs/PORTAIL-LOCATAIRE.md)
+}
+
+enum RegistrationMode {
+  CLOSED            // aucune nouvelle inscription possible
+  INVITATION_ONLY   // seulement via invitation
+}
+
+model User {
+  id              String       @id @default(cuid())
+  name            String?
+  email           String       @unique
+  emailVerified   DateTime?
+  password        String?
+  image           String?
+  role            AppRole      @default(MEMBER)
+  // 2FA TOTP. totpSecret est chiffré en base (préfixe enc:v1:).
+  // backupCodes est un JSON array de hashes scrypt — chaque code à usage unique
+  // est retiré de la liste après consommation.
+  totpEnabled     Boolean      @default(false)
+  totpSecret      String?
+  backupCodes     String?      @db.Text
+  // Gating 2FA pour les logins via OAuth (Google) : le JWT initial porte un
+  // nonce mfaPending; le user doit valider TOTP via /verify-2fa pour que
+  // mfaVerifiedAt soit settré et le nonce libéré côté JWT au prochain refresh.
+  mfaSessionId    String?
+  mfaVerifiedAt   DateTime?
+  accounts        Account[]
+  sessions        Session[]
+  invitationsSent Invitation[] @relation("InviterUser")
+  parametres      Parametres?
+  auditLogs       AuditLog[]
+  archivesUploaded Archive[]
+  // Si role = TENANT, ce User est rattaché à 1+ Locataire via la relation
+  // inverse (tenantUserId). Pas de FK explicite ici.
+  locatairesAccessibles Locataire[]      @relation("TenantAccess")
+  magicLinks            PortailMagicLink[]
+  // Compte désactivé (TENANT orphelin après suppression de tous ses
+  // locataires, ou désactivation manuelle). Au lieu de supprimer le
+  // User (perte de l'audit), on le marque disabled : aucune
+  // authentification possible, magic link silencieusement ignoré.
+  disabledAt      DateTime?
+  // Memberships m:n vers Bailleur — scope multi-tenant server-side
+  // (cf. docs/MULTI-BAILLEUR.md). Vide pour TENANT (lien via Locataire.tenantUserId).
+  memberships     BailleurMembership[]
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+}
+
+model AppConfig {
+  id                  String           @id @default("singleton")
+  appName             String           @default("Quittances")
+  registrationMode    RegistrationMode @default(CLOSED)
+  setupCompleted      Boolean          @default(false)
+  // Rétention du journal d'activité (en jours). Au-delà, les entrées sont purgées.
+  auditRetentionDays  Int              @default(365)
+  // Configuration INSEE (récupération auto IRL). Le secret est chiffré
+  // (préfixe enc:v1:) ; la clé peut rester en clair (équivalent identifiant).
+  inseeApiKey         String?
+  inseeApiSecret      String?
+  inseeLastSyncAt     DateTime?
+  // v3.1.0 — Phase 2 backup cloud S3-compatible. Tous nullable, default
+  // backupEnabled=false. Secrets (accessKeyId, secretKey, envPassphrase)
+  // chiffrés via crypto.encrypt() (préfixe enc:v1:).
+  // instanceId : UUID v4 généré au premier POST si null. Permanent —
+  // sert de prefix bucket S3 pour isoler les instances multiples.
+  instanceId           String?
+  backupEnabled        Boolean   @default(false)
+  backupS3Endpoint     String?
+  backupS3Region       String?
+  backupS3Bucket       String?
+  backupS3ForcePathStyle Boolean @default(false)
+  backupS3AccessKeyId  String?
+  backupS3SecretKey    String?
+  // Cron expression (ex : "0 3 * * *" pour quotidien 3h). Validé Zod.
+  backupSchedule       String?
+  backupRetentionDays  Int       @default(30)
+  backupEnvPassphrase  String?
+  backupNotifySuccess  Boolean   @default(false)
+  backupLastRunAt      DateTime?
+  backupLastStatus     String?
+  backupLastError      String?
+  // v3.1.0 Session 4bis — Google Drive comme alternative au S3-compatible.
+  // backupStorageType : 's3' (default) | 'drive'.
+  // backupDriveFolderId : ID du dossier Drive cible (URL contient
+  //   /folders/<id>).
+  // backupDriveRefreshToken : OAuth refresh token chiffré enc:v1: (scope
+  //   minimal `drive.file` — accès uniquement aux fichiers créés par l'app).
+  // backupDriveAccountEmail : email du compte Drive connecté (display UI).
+  backupStorageType        String?   @default("s3")
+  backupDriveFolderId      String?
+  backupDriveRefreshToken  String?
+  backupDriveAccountEmail  String?
+  // v3.1.0-rc10 — credentials OAuth Drive saisis via UI Paramètres >
+  // Backup (plus dans .env). Chiffrés enc:v1: pour uniformité avec
+  // autres secrets externes. Migration bootstrap copie process.env →
+  // DB si DB null + process.env défini (idempotent).
+  googleDriveClientId      String?
+  googleDriveClientSecret  String?
+  // v3.2.0-rc1 — Google OAuth (login NextAuth + Gmail API) credentials
+  // saisis via UI Paramètres > Intégrations (plus dans .env). Chiffrés
+  // enc:v1: pour uniformité. Migration bootstrap copie process.env → DB
+  // au boot si DB null + process.env défini (idempotent). Fallback .env
+  // legacy conservé côté lib (auth.config.ts + gmail-sender.ts) pour
+  // rétro-compat dev local + premier boot avant migration.
+  googleClientId           String?
+  googleClientSecret       String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+}
+
+// v3.1.0 — historique des exécutions backup. Affiché page /parametres/backup
+// (50 dernières lignes), purgé selon backupRetentionDays.
+model BackupRun {
+  id              String    @id @default(cuid())
+  startedAt       DateTime  @default(now())
+  finishedAt      DateTime?
+  // 'running' | 'success' | 'failed'
+  status          String
+  sizeBytes       BigInt?
+  errorMessage    String?
+  // Clé S3 du manifest.json (point d'entrée pour restauration).
+  manifestS3Key   String?
+  // Counts agrégés pour audit rapide.
+  bailleursCount  Int?
+  zipsCount       Int?
+
+  @@index([startedAt])
+}
+
+// Archive : fichier uploadé associé à une entité (Bien ou Locataire).
+// La référence est polymorphe (ownerType + ownerId). On évite des FK explicites
+// car la suppression cascade côté Bien/Locataire est gérée applicativement.
+// Le fichier physique est stocké dans UPLOADS_DIR/archives/<id>, jamais en DB.
+model Archive {
+  id           String   @id @default(cuid())
+  ownerType    String   // 'Bien' | 'Locataire'
+  ownerId      String
+  // Catégorie. Catégories système (cf. Phase 1 Lot D) : 'edl-entree',
+  // 'edl-sortie', 'bail' (alias 'contrat' accepté en lecture, normalisé
+  // 'bail' en écriture), 'courrier-revision-irl', 'preuve-depot-recommande'.
+  // Toute autre valeur (DPE, GLI, etc.) est libre, ne mappe à aucun toggle.
+  category     String?
+  // Visible côté portail locataire (privacy by default — opt-in explicite
+  // par le bailleur). Exposée uniquement si Locataire.portailActif=true ET
+  // (visibleLocataire=true OR catégorie système avec toggle correspondant).
+  visibleLocataire Boolean @default(false)
+  // Nom original du fichier (affichage)
+  filename     String
+  // Chemin relatif sous UPLOADS_DIR/archives/
+  storedPath   String
+  mimeType     String
+  size         Int
+  uploadedById String
+  uploadedBy   User     @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  createdAt    DateTime @default(now())
+
+  @@index([ownerType, ownerId])
+}
+
+// Magic link pour l'authentification du portail locataire.
+// Token clair en URL → hashé scrypt en DB. Usage unique, expire 15 min.
+model PortailMagicLink {
+  id           String    @id @default(cuid())
+  tenantUserId String
+  tenantUser   User      @relation(fields: [tenantUserId], references: [id], onDelete: Cascade)
+  // Hash scrypt du token (jamais en clair en base)
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  ip           String?
+  createdAt    DateTime  @default(now())
+
+  @@index([tenantUserId, expiresAt])
+}
+
+// Pré-inscription pour l'offre managée à venir. Email + source (page de
+// captation) + horodatage. Aucune donnée perso autre que l'email.
+model EarlyAccessSubscriber {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  source    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  // Catalogue contraint : cf. AuditAction dans src/lib/audit.ts
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   String?  @db.Text
+  ip         String?
+  createdAt  DateTime @default(now())
+  actor      User     @relation(fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@index([action])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Bailleur {
+  id              String   @id @default(cuid())
+  nom             String
+  // @deprecated v2.8.0-rc3 — remplacé par siret + raisonSociale +
+  // adresseLegale (cf. onglet Légal). Conservé pour compat rétro PDF
+  // pré-v2.8 et fallback du footer si SIRET absent. UI Infos ne
+  // l'expose plus. Migration bootstrap auto rcs → siret.
+  rcs             String?
+  adresseLigne1   String
+  adresseLigne2   String
+  villeSignature  String
+  // Téléphone affiché dans la signature des emails du portail locataire
+  // (optionnel — le bailleur peut préférer ne pas l'exposer).
+  telephone       String?
+  logoUrl         String?
+  signatureUrl    String?
+  pdfCouleur      String   @default("#1a3a5c")
+  pdfPolice       String   @default("Helvetica")
+  // v3.0.1 — opacité du logo superposé dans la zone signature des PDFs
+  // (quittance, avis d'échéance, EDL, courrier IRL, dépôt garantie).
+  // 0 = transparent total, 100 = opaque total. Default 30 = signature
+  // manuscrite reste lisible sous le logo.
+  signatureLogoOpacity Int @default(30)
+  actif           Boolean  @default(true)
+  // v2.8.0 — informations légales pour pages /mentions-legales/{slug}
+  // et /politique-confidentialite/{slug}. Tous nullable (usage perso
+  // sans commercialisation = pas obligatoire). Si commercialisation,
+  // remplir devient obligatoire (LCEN art. 6 + RGPD art. 13).
+  // Whitelist formeJuridique : SCI/SARL/SA/EURL/AUTO_ENTREPRENEUR/
+  // PARTICULIER/AUTRE (validé Zod).
+  raisonSociale       String?
+  formeJuridique      String?
+  siret               String?
+  adresseLegale       String?
+  emailRgpd           String?
+  directeurPublication String?
+  hebergeur           String?
+  biens           Bien[]
+  invitations     Invitation[]
+  // Memberships m:n vers User — scope multi-tenant server-side
+  // (cf. docs/MULTI-BAILLEUR.md).
+  memberships     BailleurMembership[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// Lien m:n entre User staff (ADMIN/MEMBER/VIEWER) et Bailleur, qui
+// matérialise le scope d'isolation multi-tenant côté serveur.
+//
+// - PK composite (userId, bailleurId) → 1 ligne par couple
+// - Cascade ON DELETE des deux côtés : suppression User ou Bailleur
+//   purge automatiquement les memberships
+// - role par membership : peut différer du User.role app-level
+//   (ex: ADMIN sur SCI A, VIEWER sur SCI B). Migration initiale
+//   utilise membership.role = user.role.
+//
+// Le rôle TENANT n'a JAMAIS de membership : son scope est défini par
+// la relation Locataire.tenantUserId (cf. docs/PORTAIL-LOCATAIRE.md).
+model BailleurMembership {
+  userId     String
+  bailleurId String
+  role       AppRole  @default(MEMBER)
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bailleur   Bailleur @relation(fields: [bailleurId], references: [id], onDelete: Cascade)
+
+  @@id([userId, bailleurId])
+  @@index([userId])
+  @@index([bailleurId])
+}
+
+model Bien {
+  id          String      @id @default(cuid())
+  bailleurId  String
+  nom         String
+  adresse     String
+  codePostal  String
+  ville       String
+  complement  String?
+  actif       Boolean     @default(true)
+  // v2.6.0 Feature B (Wizard nouveau logement) — métadonnées propriétaire.
+  // Tous nullable : Bien existant pré-v2.6 reste valide sans backfill.
+  // typeBien : whitelist côté Zod (STUDIO/T1/.../MAISON/CHAMBRE/LOCAL_COMMERCIAL/AUTRE)
+  // dpeClasse : enum A-G côté Zod, valeurs CO2 + kWh saisies manuellement
+  //   (parsing PDF DPE non-standardisé, cf. Q9 cadrage Session 0).
+  // annonceTexte : dernière annonce générée par le wizard (plain text,
+  //   collable LeBonCoin/SeLoger). Reécrit à chaque "Générer" (pas
+  //   d'historique, cf. Q7 cadrage).
+  // coverPhotoArchiveId : FK informelle vers Archive id (catégorie
+  //   PHOTO_BIEN). Pas de relation Prisma — Archive est un model
+  //   générique ownerType polymorphe, contraindre alourdirait. Le
+  //   serveur valide à la lecture / set.
+  surface              Float?
+  typeBien             String?
+  etage                Int?
+  dpeClasse            String?
+  dpeKwh               Float?
+  dpeGes               Float?
+  annonceTexte         String?
+  // v2.6.1-rc2 : persistance des inputs form annonce (équipements,
+  // disponibilité, contact, choix adresse/secteur). Permet à l'admin de
+  // rouvrir l'onglet Annonce et retrouver ses saisies. Format JSON :
+  //   { equipements, disponibilite, contact, adresseChoice }
+  annonceMeta          Json?
+  coverPhotoArchiveId  String?
+  bailleur    Bailleur    @relation(fields: [bailleurId], references: [id], onDelete: Cascade)
+  locataires  Locataire[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([bailleurId])
+}
+
+model Locataire {
+  id                    String      @id @default(cuid())
+  bienId                String
+  nom                   String
+  prenom                String
+  email                 String?
+  telephone             String?
+  loyerNu               Float
+  charges               Float
+  // Dépôt de garantie versé à l'entrée. Optionnel : pas toujours connu lors
+  // de la migration de baux existants.
+  montantDepotGarantie  Float?
+  // Indexation IRL : trimestre de référence du bail (1-4) et valeur IRL au
+  // moment de la signature. Si null, le bail n'est pas indexé.
+  irlTrimestre          Int?
+  irlValeurReference    Float?
+  // Date anniversaire de révision (par défaut = dateEntree).
+  dateRevisionAnnuelle  DateTime?
+  dateEntree            DateTime
+  dateSortie            DateTime?
+  actif                 Boolean     @default(true)
+  // Portail locataire (cf. docs/PORTAIL-LOCATAIRE.md).
+  // tenantUserId : FK vers le User TENANT correspondant (créé via invite).
+  // portailActif : source of truth — gate global pour toutes les routes
+  //   /portail/*. Quand false, le tenant n'a accès à RIEN même si tenantUserId
+  //   et portailActiveLe sont set.
+  // portailActiveLe : timestamp d'activation (audit / traçabilité).
+  // Toggles partage* : default true. Consultés uniquement quand portailActif=true.
+  // Cf. Phase 1 Lot D : doc sharing par locataire.
+  tenantUserId          String?
+  tenantUser            User?       @relation("TenantAccess", fields: [tenantUserId], references: [id], onDelete: SetNull)
+  portailActiveLe       DateTime?
+  portailActif          Boolean     @default(false)
+  partageQuittances     Boolean     @default(true)
+  partageEtatDesLieux   Boolean     @default(true)
+  partageBail           Boolean     @default(true)
+  // partageDDT (v2.5.0 Feature A) : expose les Bien-archives DDT (DPE +
+  // diagnostics amiante/élec/gaz/plomb + ERP) au tenant via /portail/documents.
+  // Default false (privacy by default) — opt-in explicite par bailleur.
+  partageDDT            Boolean     @default(false)
+  bien                  Bien        @relation(fields: [bienId], references: [id], onDelete: Cascade)
+  quittances            Quittance[]
+  revisionsIRL          RevisionIRL[]
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  @@index([bienId])
+  @@index([tenantUserId])
+}
+
+// Cache local des valeurs IRL par trimestre. Saisie manuelle (Paramètres → IRL)
+// ou alimenté à terme via l'API INSEE (BDM, série 001763852).
+// Source d'autorité : https://www.insee.fr/fr/statistiques/serie/001763852
+model IndiceIRL {
+  id        String   @id @default(cuid())
+  // Identifiant unique du trimestre (annee*10 + trimestre, ex: 20251 pour 2025T1)
+  periode   Int      @unique
+  annee     Int
+  trimestre Int
+  valeur    Float
+  // Variation annuelle en pourcentage (info, non utilisée pour le calcul)
+  variation Float?
+  source    String   @default("manual") // 'manual' | 'insee'
+  createdAt DateTime @default(now())
+
+  @@index([annee, trimestre])
+}
+
+// Historique des révisions IRL appliquées à un bail.
+model RevisionIRL {
+  id              String    @id @default(cuid())
+  locataireId     String
+  dateEffet       DateTime  @db.Date
+  ancienLoyer     Float
+  nouveauLoyer    Float
+  // IRL de référence (au moment de la signature du bail) et IRL appliqué
+  irlReference    Float
+  irlNouveau      Float
+  trimestre       Int
+  // Statut : DRAFT (calculée mais pas encore validée par le bailleur),
+  // APPLIED (locataire.loyerNu mis à jour), CANCELLED (annulée par le bailleur).
+  statut          String    @default("APPLIED")
+  // Archive du courrier de révision PDF auto-généré à l'application.
+  // Ref polymorphe Archive (ownerType='RevisionIRL'), id du PDF.
+  courrierArchiveId String?
+  // Suivi de l'envoi recommandé (preuve d'opposabilité au locataire)
+  recommandeEnvoyeLe DateTime?
+  recommandeNumero   String?    // numéro de suivi La Poste
+  // Archive de la preuve de dépôt (récépissé du recommandé scanné)
+  preuveDepotArchiveId String?
+  appliedAt       DateTime  @default(now())
+  locataire       Locataire @relation(fields: [locataireId], references: [id], onDelete: Cascade)
+
+  @@index([locataireId])
+}
+
+model Quittance {
+  id            String    @id @default(cuid())
+  locataireId   String
+  mois          Int
+  annee         Int
+  loyerNu       Float
+  charges       Float
+  montantTotal  Float
+  datePaiement  DateTime  @db.Date
+  dateEmission  DateTime  @db.Date
+
+  avoirAppliqueLoyer    Float   @default(0)
+  avoirAppliqueCharges  Float   @default(0)
+  montantPercu          Float?
+  surplusLoyer          Float   @default(0)
+  surplusCharges        Float   @default(0)
+  commentaire           String?  @db.Text
+
+  pdfGenere     Boolean   @default(false)
+  emailEnvoye   Boolean   @default(false)
+  dateEmail     DateTime?
+  locataire     Locataire @relation(fields: [locataireId], references: [id], onDelete: Cascade)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([locataireId, mois, annee])
+  @@index([locataireId])
+}
+
+model Parametres {
+  id                  String    @id @default(cuid())
+  userId              String    @unique
+  emailMethod         String    @default("gmail_api")
+  gmailAccessToken    String?   @db.Text
+  gmailRefreshToken   String?   @db.Text
+  gmailTokenExpiry    DateTime?
+  gmailEmail          String?
+  gmailScope          String?
+  smtpHost            String?   @default("smtp.gmail.com")
+  smtpPort            Int?      @default(587)
+  smtpUser            String?
+  smtpPass            String?
+  emailObjetTemplate  String    @default("Quittance de loyer - {mois} {annee}")
+  emailCorpsTemplate  String    @default("Bonjour {prenom},\n\nVeuillez trouver ci-joint votre quittance de loyer pour {mois} {annee}.\n\nCordialement")
+  emailSignatureHtml  String?   @db.Text
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Invitation {
+  id          String       @id @default(cuid())
+  email       String
+  role        AppRole      @default(MEMBER)
+  token       String       @unique
+  invitedById String
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime     @default(now())
+  // Note: bailleurId optionnel pour permettre les emails d'invitation contextualisés
+  // (ex: "vous êtes invité à rejoindre SCI Beauregard"). Si null = invitation app générale.
+  // Phase 2 Lot D : `bailleurIds` array pour invitation multi-bailleur. Si non vide,
+  // acceptInvitation crée N BailleurMembership avec invitation.role. `bailleurId`
+  // legacy gardé pour rétro-compat lecture (alias = bailleurIds[0]).
+  bailleurId  String?
+  bailleurIds String[]     @default([])
+  bailleur    Bailleur?    @relation(fields: [bailleurId], references: [id], onDelete: SetNull)
+  invitedBy   User         @relation("InviterUser", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([email])
+}

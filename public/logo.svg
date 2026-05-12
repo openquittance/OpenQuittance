@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- Carré arrondi de fond, opacité 8% -->
+  <rect x="0" y="0" width="64" height="64" rx="12" fill="currentColor" opacity="0.08"/>
+
+  <!-- Toit (triangle) -->
+  <path d="M 12 32 L 32 14 L 52 32" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Corps de la maison (rectangle ouvert sur le bas) -->
+  <path d="M 18 30 V 50 H 46 V 30" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Lignes de quittance (deux barres horizontales évoquant un document) -->
+  <line x1="24" y1="38" x2="40" y2="38" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity="0.5"/>
+  <line x1="24" y1="44" x2="36" y2="44" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity="0.5"/>
+</svg>

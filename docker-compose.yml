@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: quittances-app
+    ports:
+      - "3800:3000"
+    environment:
+      DATABASE_URL: postgresql://quittances:password@db:5432/quittances
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3800}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      # v2 — chiffrement AES-256-GCM des champs sensibles (Gmail tokens, IBAN, ...)
+      ENCRYPTION_SECRET: ${ENCRYPTION_SECRET}
+      # v2.9.0 — chiffrement applicatif des uploads (logos, archives, etc.)
+      # Générer avec : openssl rand -base64 32. NE JAMAIS PERDRE cette clé
+      # (fichiers uploads chiffrés deviennent irrécupérables sans elle).
+      UPLOADS_ENCRYPTION_KEY: ${UPLOADS_ENCRYPTION_KEY}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      # v2 — API INSEE pour récupération automatique des IRL (optionnel)
+      INSEE_API_KEY: ${INSEE_API_KEY:-}
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: quittances-db
+    environment:
+      POSTGRES_DB: quittances
+      POSTGRES_USER: quittances
+      POSTGRES_PASSWORD: password
+    # Pas de mapping de port: Postgres reste privé au réseau Docker.
+    # L'app le contacte par son nom de service "db" sur le réseau interne.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quittances"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:

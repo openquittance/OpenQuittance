@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/grx14/quittances-app/discussions
+    about: Questions, idées, retours d'usage. Préférez les Discussions pour tout ce qui n'est pas un bug ou une feature concrète.
+  - name: 🔒 Vulnérabilité de sécurité
+    url: https://github.com/grx14/quittances-app/security/policy
+    about: Pour signaler une faille de sécurité, NE PAS ouvrir d'issue publique. Voir SECURITY.md.
